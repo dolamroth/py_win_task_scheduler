@@ -1,0 +1,9 @@
+*.pyc
+
+.python-version
+.idea/
+.env
+venv/
+/static/
+/templates/
+asgi.py
