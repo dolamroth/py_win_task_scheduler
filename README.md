@@ -5,7 +5,7 @@ from `https://github.com/saltstack/salt` (Apache 2.0 Licence) as a separate repo
 
 ## Installation and usage
 
-
+`pip install https://github.com/dolamroth/py_win_task_scheduler/archive/refs/heads/main.zip`
 
 ## Changes made
 
