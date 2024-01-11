@@ -7,3 +7,6 @@ venv/
 /static/
 /templates/
 asgi.py
+.pypirc
+dist/
+py_win_task_scheduler.egg-info/

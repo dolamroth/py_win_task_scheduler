@@ -2,13 +2,22 @@
 # flake8: noqa
 from __future__ import absolute_import, print_function, unicode_literals
 
+import time
 import logging
 import threading
 from datetime import datetime
 
-import anyio
 import pythoncom
+import pywintypes
 import win32com.client
+
+
+try:
+    import anyio
+    async_sleep = anyio.sleep
+except (ImportError, SystemError, ModuleNotFoundError):
+    import asyncio
+    async_sleep = asyncio.sleep
 
 
 class ArgumentValueError(Exception):
@@ -358,7 +367,13 @@ def list_tasks(location="\\"):
         task_service.Connect()
 
         # Get the folder to list tasks from
-        task_folder = task_service.GetFolder(location)
+        try:
+            task_folder = task_service.GetFolder(location)
+        except pywintypes.com_error:
+            msg = "Unable to load location: {}".format(location)
+            log.error(msg)
+            raise CommandExecutionError(msg)
+
         tasks = task_folder.GetTasks(0)
 
         ret = []
@@ -1111,12 +1126,13 @@ def edit_task(
         if delete_after is not None:
             if delete_after is False:
                 task_definition.Settings.DeleteExpiredTaskAfter = ""
-            if delete_after in duration:
-                task_definition.Settings.DeleteExpiredTaskAfter = _lookup_first(
-                    duration, delete_after
-                )
             else:
-                return 'Invalid value for "delete_after"'
+                if delete_after in duration:
+                    task_definition.Settings.DeleteExpiredTaskAfter = _lookup_first(
+                        duration, delete_after
+                    )
+                else:
+                    return 'Invalid value for "delete_after"'
         if multiple_instances is not None:
             task_definition.Settings.MultipleInstances = instances[multiple_instances]
 
@@ -1258,7 +1274,7 @@ def run(name, location="\\"):
             return False
 
 
-async def run_wait(name, location="\\"):
+def run_wait(name, location="\\"):
     r"""
     Run a scheduled task and return when the task finishes
 
@@ -1300,7 +1316,7 @@ async def run_wait(name, location="\\"):
 
         try:
             task.Run("")
-            await anyio.sleep(1)
+            time.sleep(1)
             running = True
         except pythoncom.com_error:
             return False
@@ -1316,7 +1332,71 @@ async def run_wait(name, location="\\"):
             except pythoncom.com_error:
                 running = False
             finally:
-                await anyio.sleep(1)
+                time.sleep(1)
+
+    return True
+
+
+async def run_wait_async(name, location="\\"):
+    r"""
+    Run a scheduled task and return when the task finishes
+    Async method, which may be cancelled with asyncio.timeout / anyio.CancelScope
+
+    Args:
+
+        name (str):
+            The name of the task to run.
+
+        location (str):
+            A string value representing the location of the task. Default is
+            ``\`` which is the root for the task scheduler
+            (``C:\Windows\System32\tasks``).
+
+    Returns:
+        bool: ``True`` if successful, otherwise ``False``
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt 'minion-id' task.list_run_wait <task_name>
+    """
+    # Check for existing folder
+    if name not in list_tasks(location):
+        return "{0} not found in {1}".format(name, location)
+
+    # connect to the task scheduler
+    with Com():
+        task_service = win32com.client.Dispatch("Schedule.Service")
+        task_service.Connect()
+
+        # get the folder to delete the folder from
+        task_folder = task_service.GetFolder(location)
+        task = task_folder.GetTask(name)
+
+        # Is the task already running
+        if task.State == TASK_STATE_RUNNING:
+            return "Task already running"
+
+        try:
+            task.Run("")
+            await async_sleep(1)
+            running = True
+        except pythoncom.com_error:
+            return False
+
+        while running:
+            running = False
+            try:
+                running_tasks = task_service.GetRunningTasks(0)
+                if running_tasks.Count:
+                    for item in running_tasks:
+                        if item.Name == name:
+                            running = True
+            except pythoncom.com_error:
+                running = False
+            finally:
+                await async_sleep(1)
 
     return True
 
@@ -1551,6 +1631,16 @@ def info(name, location="\\"):
                     trigger["delay"] = _reverse_lookup(duration, triggerObj.Delay)
                 else:
                     trigger["delay"] = False
+            if hasattr(triggerObj, "Repetition"):
+                trigger["repeat_duration"] = _reverse_lookup(
+                    duration, triggerObj.Repetition.Duration
+                )
+                trigger["repeat_interval"] = _reverse_lookup(
+                    duration, triggerObj.Repetition.Interval
+                )
+                trigger[
+                    "repeat_stop_at_duration_end"
+                ] = triggerObj.Repetition.StopAtDurationEnd
             triggers.append(trigger)
 
         properties["settings"] = settings
